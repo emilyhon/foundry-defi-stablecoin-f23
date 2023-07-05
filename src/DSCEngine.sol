@@ -1,26 +1,3 @@
-// This is considered an Exogenous, Decentralized, Anchored (pegged), Crypto Collateralized low volitility coin
-
-// Layout of Contract:
-// version
-// imports
-// errors
-// interfaces, libraries, contracts
-// Type declarations
-// State variables
-// Events
-// Modifiers
-// Functions
-
-// Layout of Functions:
-// constructor
-// receive function (if exists)
-// fallback function (if exists)
-// external
-// public
-// internal
-// private
-// view & pure functions
-
 // SPDX-License-Identifier: MIT
 
 pragma solidity 0.8.18;
@@ -29,6 +6,7 @@ import {DecentralizedStableCoin} from "./DecentralizedStableCoin.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {AggregatorV3Interface} from "@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
+import {OracleLib} from "./libraries/OracleLib.sol";
 
 /**
  * @title DSCEngine
@@ -57,6 +35,11 @@ contract DSCEngine is ReentrancyGuard {
     error DSCEngine__MintFailed();
     error DSCEngine__HealthFactorOk();
     error DSCEngine__HealthFactorNotImproved();
+
+    /////////////////////////
+    // Errors              //
+    /////////////////////////
+    using OracleLib for AggregatorV3Interface;
 
     /////////////////////////
     // State Variables     //
@@ -144,9 +127,30 @@ contract DSCEngine is ReentrancyGuard {
      */
     function redeemCollateralForDsc(address tokenCollateralAddress, uint256 amountCollateral, uint256 amountDscToBurn)
         external
+        moreThanZero(amountCollateral)
     {
-        burnDsc(amountDscToBurn);
-        redeemCollateral(tokenCollateralAddress, amountCollateral);
+        _burnDsc(amountDscToBurn, msg.sender, msg.sender);
+        _redeemCollateral(tokenCollateralAddress, amountCollateral, msg.sender, msg.sender);
+        _revertIfHealthFactorIsBroken(msg.sender);
+    }
+
+    /**
+     * @param tokenCollateralAddress The address of the token to deposit as collateral
+     * @param amountCollateral The amount of collateral to deposit
+     * @notice User's health factor must be greater than 1 after collateral is withdrawn
+     */
+    function redeemCollateral(address tokenCollateralAddress, uint256 amountCollateral)
+        external
+        moreThanZero(amountCollateral)
+        nonReentrant
+    {
+        _redeemCollateral(tokenCollateralAddress, amountCollateral, msg.sender, msg.sender);
+        _revertIfHealthFactorIsBroken(msg.sender);
+    }
+
+    function burnDsc(uint256 amount) external moreThanZero(amount) {
+        _burnDsc(amount, msg.sender, msg.sender);
+        _revertIfHealthFactorIsBroken(msg.sender); // Unlikely this would ever hit
     }
 
     /**
@@ -182,8 +186,6 @@ contract DSCEngine is ReentrancyGuard {
         _revertIfHealthFactorIsBroken(msg.sender);
     }
 
-    function getHealthFactor() external view {}
-
     // Public Functions
 
     /**
@@ -215,25 +217,6 @@ contract DSCEngine is ReentrancyGuard {
         if (!minted) {
             revert DSCEngine__MintFailed();
         }
-    }
-
-    /**
-     * @param tokenCollateralAddress The address of the token to deposit as collateral
-     * @param amountCollateral The amount of collateral to deposit
-     * @notice User's health factor must be greater than 1 after collateral is withdrawn
-     */
-    function redeemCollateral(address tokenCollateralAddress, uint256 amountCollateral)
-        public
-        moreThanZero(amountCollateral)
-        nonReentrant
-    {
-        _redeemCollateral(tokenCollateralAddress, amountCollateral, msg.sender, msg.sender);
-        _revertIfHealthFactorIsBroken(msg.sender);
-    }
-
-    function burnDsc(uint256 amount) public moreThanZero(amount) {
-        _burnDsc(amount, msg.sender, msg.sender);
-        _revertIfHealthFactorIsBroken(msg.sender); // Unlikely this would ever hit
     }
 
     // Private & Internal View Functions
@@ -280,11 +263,6 @@ contract DSCEngine is ReentrancyGuard {
         collateralValueInUSD = getAccountCollateralValue(user);
     }
 
-    /**
-     * Returns how close to liquidation a user is
-     * If a user's health factor goes below 1, then they can get liquidated
-     * @param user address of the user
-     */
     function _healthFactor(address user) private view returns (uint256) {
         (uint256 totalDscMinted, uint256 collateralValueInUsd) = _getAccountInformation(user);
         return _calculateHealthFactor(totalDscMinted, collateralValueInUsd);
@@ -328,7 +306,7 @@ contract DSCEngine is ReentrancyGuard {
      */
     function getTokenAmountFromUsd(address token, uint256 usdAmountInWei) public view returns (uint256) {
         AggregatorV3Interface priceFeed = AggregatorV3Interface(s_priceFeeds[token]);
-        (, int256 price,,,) = priceFeed.latestRoundData();
+        (, int256 price,,,) = priceFeed.staleCheckLatestRoundData();
         return ((usdAmountInWei * PRECISION) / (uint256(price) * ADDITIONAL_FEED_PRECISION));
     }
 
